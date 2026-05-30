@@ -1,0 +1,7 @@
+node_modules/
+.next/
+finanzas.db
+finanzas.db-shm
+finanzas.db-wal
+.env
+.env.local
