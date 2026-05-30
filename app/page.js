@@ -43,6 +43,9 @@ export default function Home() {
   const [config, setConfig] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importPreview, setImportPreview] = useState([]);
   const [loading, setLoading] = useState(true);
 
   const [form, setForm] = useState({
@@ -175,6 +178,87 @@ export default function Home() {
     }
   }
 
+  function parseImportText(text) {
+    const lines = text.trim().split('\n').filter(l => l.trim());
+    const parsed = [];
+    const [y, m] = month.split('-');
+
+    for (const line of lines) {
+      const clean = line.trim().replace(/\s+/g, ' ');
+      let fecha, entrada, salida, tipo = 'normal';
+
+      const m1 = clean.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-]?(\d{2,4})?\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})/);
+      const m2 = clean.match(/^(\d{1,2})\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})/);
+      const m3 = clean.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-]?(\d{2,4})?\s+(domingo|festivo|nocturno|normal)\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})/i);
+      const m4 = clean.match(/^(\d{1,2})\s+(domingo|festivo|nocturno|normal)\s+(\d{1,2}:\d{2})\s+(\d{1,2}:\d{2})/i);
+
+      if (m3) {
+        const dia = m3[1].padStart(2, '0');
+        const mes = m3[2].padStart(2, '0');
+        const anio = m3[3] ? (m3[3].length === 2 ? '20' + m3[3] : m3[3]) : y;
+        fecha = `${anio}-${mes}-${dia}`;
+        tipo = m3[4].toLowerCase();
+        entrada = m3[5];
+        salida = m3[6];
+      } else if (m4) {
+        const dia = m4[1].padStart(2, '0');
+        fecha = `${y}-${m}-${dia}`;
+        tipo = m4[2].toLowerCase();
+        entrada = m4[3];
+        salida = m4[4];
+      } else if (m1) {
+        const dia = m1[1].padStart(2, '0');
+        const mes = m1[2].padStart(2, '0');
+        const anio = m1[3] ? (m1[3].length === 2 ? '20' + m1[3] : m1[3]) : y;
+        fecha = `${anio}-${mes}-${dia}`;
+        entrada = m1[4];
+        salida = m1[5];
+      } else if (m2) {
+        const dia = m2[1].padStart(2, '0');
+        fecha = `${y}-${m}-${dia}`;
+        entrada = m2[2];
+        salida = m2[3];
+      } else {
+        continue;
+      }
+
+      let total = 0;
+      if (tipo === 'normal') total = config?.precio_normal || 59000;
+      else if (tipo === 'domingo') total = config?.precio_domingo || 88000;
+      else if (tipo === 'festivo') total = config?.precio_festivo || 88000;
+      else if (tipo === 'nocturno') total = config?.precio_nocturno || 92000;
+
+      parsed.push({ fecha, tipo, entrada, salida, total, original: line.trim() });
+    }
+    setImportPreview(parsed);
+  }
+
+  async function submitImport() {
+    try {
+      for (const item of importPreview) {
+        await fetch('/api/jornadas', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fecha: item.fecha,
+            tipo: item.tipo,
+            hora_entrada: item.entrada,
+            hora_salida: item.salida,
+            horas_extra: 0,
+            total: item.total,
+            notas: '',
+          }),
+        });
+      }
+      setImportText('');
+      setImportPreview([]);
+      setShowImport(false);
+      fetchData();
+    } catch (e) {
+      alert('Error al importar: ' + e.message);
+    }
+  }
+
   async function saveConfig(e) {
     e.preventDefault();
     try {
@@ -272,13 +356,21 @@ export default function Home() {
           </div>
         )}
 
-        {/* ADD BUTTON */}
-        <button
-          onClick={() => setShowForm(true)}
-          className="w-full mb-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-2xl shadow-lg shadow-indigo-200 transition-all active:scale-[0.98]"
-        >
-          + Nueva Jornada
-        </button>
+        {/* ADD BUTTONS */}
+        <div className="grid grid-cols-2 gap-3 mb-6">
+          <button
+            onClick={() => setShowForm(true)}
+            className="py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-2xl shadow-lg shadow-indigo-200 transition-all active:scale-[0.98]"
+          >
+            + Nueva Jornada
+          </button>
+          <button
+            onClick={() => setShowImport(true)}
+            className="py-3 bg-white hover:bg-slate-50 text-slate-700 font-medium rounded-2xl shadow-sm border border-slate-200 transition-all active:scale-[0.98]"
+          >
+            Importar días
+          </button>
+        </div>
 
         {/* TABLE */}
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
@@ -492,6 +584,95 @@ export default function Home() {
                 Guardar Configuración
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: IMPORTAR DÍAS */}
+      {showImport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => { setShowImport(false); setImportText(''); setImportPreview([]); }}>
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto scrollbar-thin" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="text-lg font-bold text-slate-800">Importar días</h2>
+              <button onClick={() => { setShowImport(false); setImportText(''); setImportPreview([]); }} className="p-1.5 hover:bg-slate-100 rounded-xl transition-colors">
+                <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+
+            <div className="mb-4 bg-slate-50 rounded-xl p-4 text-xs text-slate-500 space-y-1">
+              <p className="font-semibold text-slate-600">Formatos aceptados (uno por línea):</p>
+              <p><code className="bg-slate-200 px-1 rounded">10 07:00 17:00</code> — día del mes actual</p>
+              <p><code className="bg-slate-200 px-1 rounded">10/05 07:00 17:00</code> — día/mes</p>
+              <p><code className="bg-slate-200 px-1 rounded">15 domingo 08:00 16:00</code> — con tipo</p>
+              <p><code className="bg-slate-200 px-1 rounded">20 nocturno 19:00 06:00</code> — nocturno</p>
+            </div>
+
+            <div className="mb-4">
+              <label className="block text-xs font-medium text-slate-500 mb-1">Pega tu lista de días aquí:</label>
+              <textarea
+                value={importText}
+                onChange={e => {
+                  setImportText(e.target.value);
+                  parseImportText(e.target.value);
+                }}
+                rows={8}
+                placeholder={"10 07:00 17:00\n11 07:00 17:00\n12 domingo 08:00 14:00\n15 nocturno 19:00 06:00"}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 outline-none transition-all text-sm font-mono resize-none"
+              />
+            </div>
+
+            {importPreview.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-medium text-slate-500 mb-2">Vista previa ({importPreview.length} días):</p>
+                <div className="bg-slate-50 rounded-xl p-3 max-h-48 overflow-y-auto scrollbar-thin">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-slate-400">
+                        <th className="text-left py-1 font-medium">Fecha</th>
+                        <th className="text-left py-1 font-medium">Tipo</th>
+                        <th className="text-left py-1 font-medium">Entrada</th>
+                        <th className="text-left py-1 font-medium">Salida</th>
+                        <th className="text-right py-1 font-medium">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {importPreview.map((item, i) => (
+                        <tr key={i}>
+                          <td className="py-1.5 font-medium text-slate-700">{item.fecha}</td>
+                          <td className="py-1.5">
+                            <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${item.tipo === 'normal' ? 'bg-blue-100 text-blue-700' : item.tipo === 'domingo' ? 'bg-amber-100 text-amber-700' : item.tipo === 'festivo' ? 'bg-red-100 text-red-700' : 'bg-indigo-100 text-indigo-700'}`}>
+                              {item.tipo}
+                            </span>
+                          </td>
+                          <td className="py-1.5 text-slate-600">{item.entrada}</td>
+                          <td className="py-1.5 text-slate-600">{item.salida}</td>
+                          <td className="py-1.5 text-right font-medium text-slate-700">{formatCOP(item.total)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-slate-400 mt-2 text-right font-medium">
+                  Total: {formatCOP(importPreview.reduce((s, i) => s + i.total, 0))}
+                </p>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setShowImport(false); setImportText(''); setImportPreview([]); }}
+                className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-600 font-medium rounded-xl transition-all"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={submitImport}
+                disabled={importPreview.length === 0}
+                className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-xl transition-all active:scale-[0.98] shadow-lg shadow-indigo-200 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Importar {importPreview.length > 0 && `(${importPreview.length})`}
+              </button>
+            </div>
           </div>
         </div>
       )}
