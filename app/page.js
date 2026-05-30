@@ -36,67 +36,101 @@ function labelCorte(c) {
   return c === 1 ? 'Corte 1' : 'Corte 2';
 }
 
+const DEFAULT_CONFIG = {
+  entrada_normal: '07:00',
+  salida_normal: '17:00',
+  precio_normal: 59000,
+  precio_extra_hora: 5500,
+  precio_domingo: 88000,
+  precio_festivo: 88000,
+  entrada_nocturna: '19:00',
+  salida_nocturna: '06:00',
+  precio_nocturno: 92000,
+};
+
+function loadConfig() {
+  if (typeof window === 'undefined') return DEFAULT_CONFIG;
+  try {
+    const raw = localStorage.getItem('finanzas_config');
+    return raw ? { ...DEFAULT_CONFIG, ...JSON.parse(raw) } : DEFAULT_CONFIG;
+  } catch { return DEFAULT_CONFIG; }
+}
+
+function saveConfigLocal(c) {
+  localStorage.setItem('finanzas_config', JSON.stringify(c));
+}
+
+function loadJornadas() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem('finanzas_jornadas');
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveJornadasLocal(j) {
+  localStorage.setItem('finanzas_jornadas', JSON.stringify(j));
+}
+
+function calcStats(jornadas, month) {
+  const filtered = jornadas.filter(j => j.fecha.startsWith(month));
+  const total_dias = filtered.length;
+  const total_ganado = filtered.reduce((s, j) => s + j.total, 0);
+  const total_horas_extra = filtered.reduce((s, j) => s + (j.horas_extra || 0), 0);
+  const promedio = total_dias > 0 ? Math.round(total_ganado / total_dias) : 0;
+
+  const corte1 = filtered.filter(j => new Date(j.fecha + 'T12:00:00').getDate() <= 14);
+  const corte2 = filtered.filter(j => new Date(j.fecha + 'T12:00:00').getDate() >= 15);
+
+  return {
+    total_dias,
+    dias_normales: filtered.filter(j => j.tipo === 'normal').length,
+    dias_domingo: filtered.filter(j => j.tipo === 'domingo').length,
+    dias_festivo: filtered.filter(j => j.tipo === 'festivo').length,
+    dias_nocturnos: filtered.filter(j => j.tipo === 'nocturno').length,
+    total_ganado,
+    total_horas_extra,
+    promedio,
+    corte1: { dias: corte1.length, total: corte1.reduce((s, j) => s + j.total, 0) },
+    corte2: { dias: corte2.length, total: corte2.reduce((s, j) => s + j.total, 0) },
+  };
+}
+
 export default function Home() {
   const [month, setMonth] = useState(mesActual());
   const [jornadas, setJornadas] = useState([]);
   const [stats, setStats] = useState(null);
-  const [config, setConfig] = useState(null);
+  const [config, setConfig] = useState(DEFAULT_CONFIG);
   const [showForm, setShowForm] = useState(false);
   const [showConfig, setShowConfig] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
 
   const [form, setForm] = useState({
     fecha: hoy(),
     tipo: 'normal',
-    hora_entrada: '',
-    hora_salida: '',
+    hora_entrada: '07:00',
+    hora_salida: '17:00',
     horas_extra: '0',
     total: '',
     notas: '',
   });
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [jRes, sRes, cRes] = await Promise.all([
-        fetch(`/api/jornadas?month=${month}`),
-        fetch(`/api/stats?month=${month}`),
-        fetch('/api/config'),
-      ]);
-      const j = await jRes.json();
-      const s = await sRes.json();
-      const c = await cRes.json();
-      setJornadas(j);
-      setStats(s);
-      setConfig(c);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }, [month]);
+  useEffect(() => {
+    const c = loadConfig();
+    const j = loadJornadas();
+    setConfig(c);
+    setJornadas(j);
+    setLoaded(true);
+    setForm(f => ({ ...f, hora_entrada: c.entrada_normal, hora_salida: c.salida_normal }));
+  }, []);
 
   useEffect(() => {
-    setLoading(true);
-    fetchData();
-  }, [fetchData]);
-
-  useEffect(() => {
-    if (config) {
-      setForm(f => ({
-        ...f,
-        hora_entrada: config.entrada_normal || '',
-        hora_salida: config.salida_normal || '',
-      }));
+    if (loaded) {
+      setStats(calcStats(jornadas, month));
     }
-  }, [config]);
+  }, [jornadas, month, loaded]);
 
-  const tipoLabel = {
-    normal: 'Normal',
-    domingo: 'Domingo',
-    festivo: 'Festivo',
-    nocturno: 'Nocturno',
-  };
-
+  const tipoLabel = { normal: 'Normal', domingo: 'Domingo', festivo: 'Festivo', nocturno: 'Nocturno' };
   const tipoColor = {
     normal: 'bg-blue-100 text-blue-700',
     domingo: 'bg-amber-100 text-amber-700',
@@ -131,71 +165,48 @@ export default function Home() {
     setForm(next);
   }
 
-  async function submitForm(e) {
+  function submitForm(e) {
     e.preventDefault();
-    try {
-      const payload = {
-        fecha: form.fecha,
-        tipo: form.tipo,
-        hora_entrada: form.tipo !== 'nocturno' ? form.hora_entrada : null,
-        hora_salida: form.tipo !== 'nocturno' ? form.hora_salida : null,
-        horas_extra: Number(form.horas_extra) || 0,
-        total: Number(form.total) || 0,
-        notas: form.notas,
-      };
-      if (form.tipo === 'nocturno') {
-        payload.hora_entrada = form.hora_entrada;
-        payload.hora_salida = form.hora_salida;
-      }
-      const res = await fetch('/api/jornadas', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      if (!res.ok) throw new Error('Error al guardar');
-      setForm({
-        fecha: hoy(),
-        tipo: 'normal',
-        hora_entrada: config?.entrada_normal || '',
-        hora_salida: config?.salida_normal || '',
-        horas_extra: '0',
-        total: '',
-        notas: '',
-      });
-      setShowForm(false);
-      fetchData();
-    } catch (e) {
-      alert('Error: ' + e.message);
-    }
+    const nueva = {
+      id: Date.now(),
+      fecha: form.fecha,
+      tipo: form.tipo,
+      hora_entrada: form.hora_entrada,
+      hora_salida: form.hora_salida,
+      horas_extra: Number(form.horas_extra) || 0,
+      total: Number(form.total) || 0,
+      notas: form.notas,
+      created_at: new Date().toISOString(),
+    };
+    const actualizadas = [...jornadas, nueva];
+    saveJornadasLocal(actualizadas);
+    setJornadas(actualizadas);
+    setForm({
+      fecha: hoy(),
+      tipo: 'normal',
+      hora_entrada: config?.entrada_normal || '07:00',
+      hora_salida: config?.salida_normal || '17:00',
+      horas_extra: '0',
+      total: '',
+      notas: '',
+    });
+    setShowForm(false);
   }
 
-  async function deleteJornada(id) {
+  function deleteJornada(id) {
     if (!confirm('¿Eliminar esta jornada?')) return;
-    try {
-      await fetch(`/api/jornadas/${id}`, { method: 'DELETE' });
-      fetchData();
-    } catch (e) {
-      alert('Error: ' + e.message);
-    }
+    const actualizadas = jornadas.filter(j => j.id !== id);
+    saveJornadasLocal(actualizadas);
+    setJornadas(actualizadas);
   }
 
-  async function saveConfig(e) {
+  function saveConfigHandler(e) {
     e.preventDefault();
-    try {
-      const res = await fetch('/api/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-      if (!res.ok) throw new Error('Error al guardar configuración');
-      setShowConfig(false);
-      fetchData();
-    } catch (e) {
-      alert('Error: ' + e.message);
-    }
+    saveConfigLocal(config);
+    setShowConfig(false);
   }
 
-  if (loading && !stats) {
+  if (!loaded) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50">
         <div className="animate-spin rounded-full h-10 w-10 border-4 border-indigo-500 border-t-transparent"></div>
@@ -257,7 +268,7 @@ export default function Home() {
         )}
 
         {/* CORTES CARDS */}
-        {stats && stats.corte1 && (
+        {stats && (
           <div className="grid grid-cols-2 gap-4 mb-6">
             <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-2xl shadow-sm border border-indigo-200 p-5">
               <div className="flex items-center justify-between mb-1">
@@ -289,7 +300,7 @@ export default function Home() {
           <div className="px-5 py-4 border-b border-slate-100">
             <h2 className="font-semibold text-slate-700">Historial</h2>
           </div>
-          {jornadas.length === 0 ? (
+          {jornadas.filter(j => j.fecha.startsWith(month)).length === 0 ? (
             <div className="px-5 py-12 text-center text-slate-400">
               <svg className="w-12 h-12 mx-auto mb-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
               <p>No hay jornadas registradas este mes</p>
@@ -311,36 +322,39 @@ export default function Home() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {jornadas.map(j => {
-                    const c = getCorte(j.fecha);
-                    return (
-                    <tr key={j.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-5 py-3 whitespace-nowrap">
-                        <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${c === 1 ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                          {labelCorte(c)}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 font-medium text-slate-700 whitespace-nowrap">
-                        {new Date(j.fecha + 'T12:00:00').toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}
-                      </td>
-                      <td className="px-5 py-3 whitespace-nowrap">
-                        <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${tipoColor[j.tipo] || 'bg-slate-100 text-slate-600'}`}>
-                          {tipoLabel[j.tipo] || j.tipo}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap">{j.hora_entrada || '—'}</td>
-                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap">{j.hora_salida || '—'}</td>
-                      <td className="px-5 py-3 text-slate-600 whitespace-nowrap">{j.horas_extra > 0 ? `${j.horas_extra}h` : '—'}</td>
-                      <td className="px-5 py-3 text-right font-semibold text-slate-700 whitespace-nowrap">{formatCOP(j.total)}</td>
-                      <td className="px-5 py-3 text-slate-400 max-w-[120px] truncate">{j.notas || ''}</td>
-                      <td className="px-5 py-3 text-right whitespace-nowrap">
-                        <button onClick={() => deleteJornada(j.id)} className="p-1.5 hover:bg-red-50 rounded-lg transition-colors group" title="Eliminar">
-                          <svg className="w-4 h-4 text-slate-300 group-hover:text-red-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                        </button>
-                      </td>
-                    </tr>
-                    );
-                  })}
+                  {jornadas
+                    .filter(j => j.fecha.startsWith(month))
+                    .sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id)
+                    .map(j => {
+                      const c = getCorte(j.fecha);
+                      return (
+                        <tr key={j.id} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-5 py-3 whitespace-nowrap">
+                            <span className={`inline-block px-2 py-0.5 rounded text-xs font-semibold ${c === 1 ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                              {labelCorte(c)}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3 font-medium text-slate-700 whitespace-nowrap">
+                            {new Date(j.fecha + 'T12:00:00').toLocaleDateString('es-CO', { day: '2-digit', month: 'short' })}
+                          </td>
+                          <td className="px-5 py-3 whitespace-nowrap">
+                            <span className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium ${tipoColor[j.tipo] || 'bg-slate-100 text-slate-600'}`}>
+                              {tipoLabel[j.tipo] || j.tipo}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3 text-slate-600 whitespace-nowrap">{j.hora_entrada || '—'}</td>
+                          <td className="px-5 py-3 text-slate-600 whitespace-nowrap">{j.hora_salida || '—'}</td>
+                          <td className="px-5 py-3 text-slate-600 whitespace-nowrap">{j.horas_extra > 0 ? `${j.horas_extra}h` : '—'}</td>
+                          <td className="px-5 py-3 text-right font-semibold text-slate-700 whitespace-nowrap">{formatCOP(j.total)}</td>
+                          <td className="px-5 py-3 text-slate-400 max-w-[120px] truncate">{j.notas || ''}</td>
+                          <td className="px-5 py-3 text-right whitespace-nowrap">
+                            <button onClick={() => deleteJornada(j.id)} className="p-1.5 hover:bg-red-50 rounded-lg transition-colors group" title="Eliminar">
+                              <svg className="w-4 h-4 text-slate-300 group-hover:text-red-500 transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                 </tbody>
               </table>
             </div>
@@ -424,7 +438,7 @@ export default function Home() {
       )}
 
       {/* MODAL: CONFIG */}
-      {showConfig && config && (
+      {showConfig && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={() => setShowConfig(false)}>
           <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto scrollbar-thin" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
@@ -433,9 +447,9 @@ export default function Home() {
                 <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
-            <form onSubmit={saveConfig} className="space-y-5">
+            <form onSubmit={saveConfigHandler} className="space-y-5">
               <div>
-                <h3 className="text-sm font-semibold text-slate-700 mb-3 pb-2 border-b border-slate-100">Jornada Normal (7am - 5pm)</h3>
+                <h3 className="text-sm font-semibold text-slate-700 mb-3 pb-2 border-b border-slate-100">Jornada Normal</h3>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium text-slate-500 mb-1">Entrada</label>
@@ -461,7 +475,7 @@ export default function Home() {
               </div>
 
               <div>
-                <h3 className="text-sm font-semibold text-slate-700 mb-3 pb-2 border-b border-slate-100">Domingos y Festivos (precio fijo)</h3>
+                <h3 className="text-sm font-semibold text-slate-700 mb-3 pb-2 border-b border-slate-100">Domingos y Festivos</h3>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium text-slate-500 mb-1">Precio Domingo</label>
@@ -475,7 +489,7 @@ export default function Home() {
               </div>
 
               <div>
-                <h3 className="text-sm font-semibold text-slate-700 mb-3 pb-2 border-b border-slate-100">Jornada Nocturna (7pm - 6am)</h3>
+                <h3 className="text-sm font-semibold text-slate-700 mb-3 pb-2 border-b border-slate-100">Jornada Nocturna</h3>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-medium text-slate-500 mb-1">Entrada</label>
